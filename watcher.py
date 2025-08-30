@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Minimal: on_modified for *.css/*.js; send RELATIVE path over WebSocket.
 # Also seeds MU plugin: copies watcher-connector.php -> <ROOT>/wp-content/mu-plugins/
+# and replaces the placeholder #PORT# with the actual port from env.
 
 import os
 import shutil
@@ -12,14 +13,16 @@ from watchdog.events import FileSystemEventHandler
 
 ROOT = os.environ.get("WATCH_ROOT", "/var/www/html")
 HOST = os.environ.get("WS_HOST", "0.0.0.0")
-PORT = int(os.environ.get("WS_PORT", "12345"))
+# Prefer WATCHER_PORT (compose .env used for WP) then WS_PORT; fallback to 12345
+ENV_PORT = os.environ.get("WATCHER_PORT") or os.environ.get("WS_PORT") or "12345"
+PORT = int(ENV_PORT)
 EXTS = (".css", ".js")
 
 clients = set()
 
 async def broadcast(text: str):
     dead = []
-    for ws in clients:
+    for ws in list(clients):
         try:
             await ws.send(text)
         except Exception:
@@ -53,14 +56,13 @@ class Handler(FileSystemEventHandler):
             return
 
         print(rel)
-        # schedule coroutine from watchdog's thread
         asyncio.run_coroutine_threadsafe(broadcast(rel), self.loop)
 
-def seed_mu_plugin(root: str):
+def seed_mu_plugin(root: str, port_value: int):
     """
     Copy/overwrite watcher-connector.php (next to this script)
     to <root>/wp-content/mu-plugins/watcher-connector.php.
-    Creates the mu-plugins directory if it does not exist.
+    Then replace '#PORT#' with the provided port value.
     """
     script_dir = Path(__file__).resolve().parent
     src = script_dir / "watcher-connector.php"
@@ -74,8 +76,22 @@ def seed_mu_plugin(root: str):
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)  # overwrites if exists
         print(f"[mu-plugins] Copied {src} -> {dest}")
+
+        # Replace placeholder
+        try:
+            text = dest.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = dest.read_text(encoding="latin-1")
+
+        replaced = text.replace("#PORT#", str(port_value))
+        if replaced != text:
+            dest.write_text(replaced, encoding="utf-8")
+            print(f"[mu-plugins] Replaced #PORT# with {port_value} in {dest.name}")
+        else:
+            print(f"[mu-plugins] No #PORT# placeholder found in {dest.name}")
+
     except Exception as e:
-        print(f"[mu-plugins] Copy failed: {e}")
+        print(f"[mu-plugins] Copy/replace failed: {e}")
 
 async def main():
     root = os.path.abspath(ROOT)
@@ -83,7 +99,7 @@ async def main():
         raise SystemExit(f"Watch root does not exist: {root}")
 
     # Seed/overwrite the MU plugin before starting the watcher/WS
-    seed_mu_plugin(root)
+    seed_mu_plugin(root, PORT)
 
     loop = asyncio.get_running_loop()
 
