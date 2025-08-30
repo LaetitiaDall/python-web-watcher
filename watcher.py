@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # Minimal: on_modified for *.css/*.js; send RELATIVE path over WebSocket.
+# Also seeds MU plugin: copies watcher-connector.php -> <ROOT>/wp-content/mu-plugins/
 
 import os
+import shutil
+from pathlib import Path
 import asyncio
 import websockets
 from watchdog.observers import Observer
@@ -25,7 +28,7 @@ async def broadcast(text: str):
         clients.discard(ws)
 
 async def ws_handler(ws):
-    print('client connected')
+    print("client connected")
     clients.add(ws)
     try:
         await ws.wait_closed()
@@ -53,10 +56,34 @@ class Handler(FileSystemEventHandler):
         # schedule coroutine from watchdog's thread
         asyncio.run_coroutine_threadsafe(broadcast(rel), self.loop)
 
+def seed_mu_plugin(root: str):
+    """
+    Copy/overwrite watcher-connector.php (next to this script)
+    to <root>/wp-content/mu-plugins/watcher-connector.php.
+    Creates the mu-plugins directory if it does not exist.
+    """
+    script_dir = Path(__file__).resolve().parent
+    src = script_dir / "watcher-connector.php"
+    dest_dir = Path(root).resolve() / "wp-content" / "mu-plugins"
+    dest = dest_dir / "watcher-connector.php"
+
+    try:
+        if not src.is_file():
+            print(f"[mu-plugins] Source not found: {src}")
+            return
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)  # overwrites if exists
+        print(f"[mu-plugins] Copied {src} -> {dest}")
+    except Exception as e:
+        print(f"[mu-plugins] Copy failed: {e}")
+
 async def main():
     root = os.path.abspath(ROOT)
     if not os.path.isdir(root):
         raise SystemExit(f"Watch root does not exist: {root}")
+
+    # Seed/overwrite the MU plugin before starting the watcher/WS
+    seed_mu_plugin(root)
 
     loop = asyncio.get_running_loop()
 
